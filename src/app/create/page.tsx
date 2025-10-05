@@ -8,6 +8,8 @@ import OutputPanel from '@/components/create/OutputPanel';
 import { ResumeData, PersonalInfo } from '@/lib/types/types';
 import { motion } from 'framer-motion';
 import { Toaster } from '@/components/ui/sonner';
+import { toast } from "sonner";
+
 
 const initialPersonalInfo: PersonalInfo = {
   fullName: '',
@@ -35,6 +37,8 @@ function CreateResumeContent() {
   const [resumeData, setResumeData] = useState<ResumeData>(initialData);
   const [loading, setLoading] = useState(false);
 
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+
   useEffect(() => {
     if (!authLoading && !user) {
       router.push('/auth/signin');
@@ -45,11 +49,52 @@ function CreateResumeContent() {
     setResumeData(data);
   };
 
-  const handleGenerate = async () => {
-    setLoading(true);
-    // Simulate AI processing
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    setLoading(false);
+  // const handleGenerate = async () => {
+  //   setLoading(true);
+  //   // Simulate AI processing
+  //   await new Promise(resolve => setTimeout(resolve, 2000));
+  //   setLoading(false);
+  // };
+
+    const handleGenerate = async () => {
+    try {
+      setLoading(true);
+      toast('Generating your resume with AI...');
+
+      const response = await fetch(`${API_BASE_URL}/generate_resume`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(resumeData)
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate resume');
+      }
+
+      const result = await response.json();
+
+      // ✅ Update resume data with AI-generated fields
+      setResumeData(prev => ({
+        ...prev,
+        personalInfo: {
+          ...prev.personalInfo,
+          summary: result.summary || prev.personalInfo.summary
+        },
+        experience: result.experience || prev.experience,
+        projects: result.projects || prev.projects,
+        skills: result.skills || prev.skills,
+        education: result.education || prev.education
+      }));
+
+      toast.success('AI Resume generated successfully!');
+    } catch (error) {
+      console.error('Error generating resume:', error);
+      toast.error('Failed to generate resume. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (authLoading || !user) {

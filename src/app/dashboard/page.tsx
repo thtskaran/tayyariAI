@@ -12,6 +12,10 @@ import { Resume } from '@/lib/types/types';
 import { motion } from 'framer-motion';
 import Link from 'next/link';
 import { Toaster } from '@/components/ui/sonner';
+import { toast } from 'sonner';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+
 
 function DashboardContent() {
   const { user, loading: authLoading } = useAuth();
@@ -26,41 +30,144 @@ function DashboardContent() {
     }
   }, [user, authLoading, router]);
 
+  // useEffect(() => {
+  //   const loadResumes = async () => {
+  //     setLoading(true);
+  //     await new Promise(resolve => setTimeout(resolve, 1000));
+      
+  //     // Mock data
+  //     const mockResumes: Resume[] = [
+  //       {
+  //         id: '1',
+  //         userId: user?.uid || '',
+  //         title: 'Software Engineer Resume',
+  //         content: {},
+  //         createdAt: new Date('2024-01-15'),
+  //         updatedAt: new Date('2024-01-20'),
+  //       },
+  //       {
+  //         id: '2',
+  //         userId: user?.uid || '',
+  //         title: 'Product Manager Resume',
+  //         content: {},
+  //         createdAt: new Date('2024-01-10'),
+  //         updatedAt: new Date('2024-01-18'),
+  //       }
+  //     ];
+      
+  //     setResumes(mockResumes);
+  //     setLoading(false);
+  //   };
+
+  //   if (user) {
+  //     loadResumes();
+  //   }
+  // }, [user]);
+
+  // const filteredResumes = resumes.filter(resume =>
+  //   resume.title.toLowerCase().includes(searchQuery.toLowerCase())
+  // );
+
+  // const handleEdit = (id: string) => {
+  //   router.push(`/create?resume=${id}`);
+  // };
+
+  // const handleDelete = (id: string) => {
+  //   setResumes(resumes.filter(resume => resume.id !== id));
+  // };
+
+  // const handleDownload = (id: string) => {
+  //   console.log('Downloading resume:', id);
+  // };
+
+  // const handlePreview = (id: string) => {
+  //   console.log('Previewing resume:', id);
+  // };
+
+  // useEffect(() => {
+  //   const loadResumes = async () => {
+  //     if (!user?.email) return;
+
+  //     setLoading(true);
+  //     try {
+  //       const response = await fetch(
+  //         `${API_BASE_URL}/api/resumes?email=${encodeURIComponent(user.email)}`
+  //       );
+  //       const data = await response.json();
+
+  //       if (response.ok && Array.isArray(data.resume_ids)) {
+  //         // data.resume_ids = [id1, id2, ...]
+  //         const formattedResumes = data.resume_ids.map((id: string) => ({
+  //           id,
+  //           userId: user.email,
+  //           title: `Resume ${id.substring(0, 6)}`,
+  //           content: {},
+  //           createdAt: new Date(),
+  //           updatedAt: new Date(),
+  //         }));
+  //         setResumes(formattedResumes);
+  //       } else {
+  //         setResumes([]);
+  //         toast.error(data.error || 'Failed to load resumes');
+  //       }
+  //     } catch (error) {
+  //       console.error(error);
+  //       toast.error('Error fetching resumes');
+  //     } finally {
+  //       setLoading(false);
+  //     }
+  //   };
+
+  //   if (!authLoading && user) {
+  //     loadResumes();
+  //   }
+  // }, [user,authLoading]);
+
   useEffect(() => {
-    const loadResumes = async () => {
-      setLoading(true);
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Mock data
-      const mockResumes: Resume[] = [
-        {
-          id: '1',
-          userId: user?.uid || '',
-          title: 'Software Engineer Resume',
-          content: {},
-          createdAt: new Date('2024-01-15'),
-          updatedAt: new Date('2024-01-20'),
-        },
-        {
-          id: '2',
-          userId: user?.uid || '',
-          title: 'Product Manager Resume',
-          content: {},
-          createdAt: new Date('2024-01-10'),
-          updatedAt: new Date('2024-01-18'),
-        }
-      ];
-      
-      setResumes(mockResumes);
-      setLoading(false);
-    };
+  const loadResumes = async () => {
+    if (!user?.email) {
+    setLoading(false); // <-- Add this line
+    return;
+  }
 
-    if (user) {
-      loadResumes();
+    setLoading(true);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/resumes?email=${encodeURIComponent(user.email)}`
+      );
+      const data = await response.json();
+
+      if (response.ok && Array.isArray(data.resume_ids)) {
+        const formattedResumes = data.resume_ids.map((id: string) => ({
+          id,
+          userId: user.email,
+          title: `Resume ${id.substring(0, 6)}`,
+          content: {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }));
+        setResumes(formattedResumes);
+      } else {
+        setResumes([]); // <-- prevent infinite loading
+        toast.error(data.error || 'Failed to load resumes');
+      }
+    } catch (error) {
+      console.error(error);
+      setResumes([]); // <-- prevent infinite loading
+      toast.error('Error fetching resumes');
+    } finally {
+      setLoading(false); // <-- always stop loading
     }
-  }, [user]);
+  };
 
-  const filteredResumes = resumes.filter(resume =>
+  // only run once after auth finishes
+  if (!authLoading && user) {
+    loadResumes();
+  }
+}, [user, authLoading]);
+
+
+  const filteredResumes = resumes.filter((resume) =>
     resume.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -68,25 +175,77 @@ function DashboardContent() {
     router.push(`/create?resume=${id}`);
   };
 
-  const handleDelete = (id: string) => {
-    setResumes(resumes.filter(resume => resume.id !== id));
+  const handleDelete = async (id: string) => {
+    if (!user?.email) return;
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/resumes/${id}?email=${encodeURIComponent(user.email)}`,
+        { method: 'DELETE' }
+      );
+
+      const data = await response.json();
+
+      if (response.ok) {
+        toast.success('Resume deleted successfully');
+        setResumes((prev) => prev.filter((r) => r.id !== id));
+      } else {
+        toast.error(data.error || 'Failed to delete resume');
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error('Error deleting resume');
+    }
   };
 
-  const handleDownload = (id: string) => {
-    console.log('Downloading resume:', id);
+  const handleDownload = async (id: string) => {
+    if (!user?.email) return;
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/resumes/${id}?email=${encodeURIComponent(user.email)}`
+      );
+
+      if (!response.ok) {
+        toast.error('Failed to download resume');
+        return;
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `resume_${id}.html`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      toast.success('Resume downloaded successfully');
+    } catch (error) {
+      console.error(error);
+      toast.error('Error downloading resume');
+    }
   };
 
-  const handlePreview = (id: string) => {
-    console.log('Previewing resume:', id);
+  const handlePreview = async (id: string) => {
+    if (!user?.email) return;
+    const url = `${API_BASE_URL}/api/resumes/${id}?email=${encodeURIComponent(user.email)}`;
+    window.open(url, '_blank');
   };
 
-  if (authLoading || !user) {
+
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
       </div>
     );
   }
+
+  if (!user) {
+  router.push('/auth/signin');
+  return null;
+}
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -126,16 +285,8 @@ function DashboardContent() {
 
           {/* Resume Grid */}
           {loading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {[...Array(6)].map((_, i) => (
-                <div key={i} className="bg-white rounded-lg shadow-md p-6">
-                  <div className="animate-pulse">
-                    <div className="h-4 bg-gray-200 rounded w-3/4 mb-4"></div>
-                    <div className="h-3 bg-gray-200 rounded w-1/2 mb-2"></div>
-                    <div className="h-3 bg-gray-200 rounded w-2/3"></div>
-                  </div>
-                </div>
-              ))}
+            <div className="flex justify-center py-20">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
             </div>
           ) : filteredResumes.length === 0 ? (
             <EmptyState />
@@ -158,6 +309,7 @@ function DashboardContent() {
     </div>
   );
 }
+
 
 export default function Dashboard() {
   return (

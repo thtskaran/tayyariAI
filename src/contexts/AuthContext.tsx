@@ -16,6 +16,7 @@ import { toast } from 'sonner';
 
 interface AuthContextType {
   user: User | null;
+  userEmail: string | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, displayName?: string) => Promise<void>;
@@ -33,13 +34,18 @@ export const useAuth = () => {
   return context;
 };
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
+      setUserEmail(user?.email || null);
       setLoading(false);
     });
 
@@ -48,7 +54,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signIn = async (email: string, password: string) => {
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const { user } = await signInWithEmailAndPassword(auth, email, password);
+      await fetch(`${API_BASE_URL}/api/user`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: user.email }),
+    });
       toast.success('Successfully signed in!');
     } catch (error: any) {
       toast.error(error.message || 'Failed to sign in');
@@ -62,6 +73,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (displayName) {
         await updateProfile(user, { displayName });
       }
+
+      await fetch(`${API_BASE_URL}/api/user`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: user.email }),
+      });
+
       toast.success('Account created successfully!');
     } catch (error: any) {
       toast.error(error.message || 'Failed to create account');
@@ -72,7 +90,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signInWithGoogle = async () => {
     try {
       const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      const { user } = await signInWithPopup(auth, provider);
+
+      await fetch(`${API_BASE_URL}/api/user`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: user.email }),
+      });
       toast.success('Successfully signed in with Google!');
     } catch (error: any) {
       toast.error(error.message || 'Failed to sign in with Google');
@@ -92,6 +116,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const value = {
     user,
+    userEmail,
     loading,
     signIn,
     signUp,

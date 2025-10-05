@@ -1,15 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Upload, Plus, Trash2 } from 'lucide-react';
+import { Upload, Plus, Trash2, Eye } from 'lucide-react';
 import { ResumeData, PersonalInfo, Education, Experience, Skill } from '@/lib/types/types';
 import { motion } from 'framer-motion';
+import { getResumes , getResumeById , uploadResume } from '@/lib/api/resumes';
+import { useAuth } from '@/contexts/AuthContext';
+
 
 interface InputPanelProps {
   data: ResumeData;
@@ -19,7 +22,59 @@ interface InputPanelProps {
 }
 
 export default function InputPanel({ data, onDataChange, onGenerate, loading }: InputPanelProps) {
+  const {userEmail} = useAuth();
   const [activeTab, setActiveTab] = useState('upload');
+  const [resumeList, setResumeList] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  // useEffect(() => {
+  //   if (userEmail) {
+  //     fetchResumes();
+  //   }
+  // }, [userEmail]);
+
+  const fetchResumes = async () => {
+    try {
+      const res = await getResumes(userEmail);
+      setResumeList(res.resume_ids || []);
+    } catch (err) {
+      console.error('Error fetching resumes:', err);
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+   const allowedExtensions = ['.html', '.pdf', '.docx'];
+if (!allowedExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) {
+  alert('Only HTML, PDF, or DOCX files are allowed.');
+  return;
+}
+
+    try {
+      setUploading(true);
+      const resumeId = Date.now().toString(); // Generate an ID (or let backend handle)
+      await uploadResume(resumeId, file, userEmail);
+      alert('Resume uploaded successfully!');
+      await fetchResumes();
+    } catch (error) {
+      console.error('Upload failed:', error);
+      alert('Failed to upload resume.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleViewResume = async (resumeId: string) => {
+    try {
+      const htmlContent = await getResumeById(resumeId, userEmail);
+      const newWindow = window.open();
+      newWindow?.document.write(htmlContent);
+    } catch (err) {
+      console.error('Error fetching resume:', err);
+    }
+  };
 
   const handlePersonalInfoChange = (field: keyof PersonalInfo, value: string) => {
     onDataChange({
@@ -124,12 +179,6 @@ export default function InputPanel({ data, onDataChange, onGenerate, loading }: 
     });
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      console.log('File uploaded:', file);
-    }
-  };
 
   return (
     <div className="h-full overflow-y-auto bg-white">
@@ -160,18 +209,41 @@ export default function InputPanel({ data, onDataChange, onGenerate, loading }: 
                     Upload a PDF or DOCX file and let AI enhance it
                   </p>
                   <label htmlFor="file-upload" className="cursor-pointer">
-                    <Button asChild>
-                      <span>Choose File</span>
+                    <Button asChild disabled={uploading}>
+                      <span>{uploading ? 'Uploading...' : 'Choose File'}</span>
                     </Button>
                   </label>
                   <input
                     id="file-upload"
                     type="file"
-                    accept=".pdf,.docx,.doc"
+                    accept=".pdf,.docx,.html"
                     onChange={handleFileUpload}
                     className="hidden"
                   />
                 </div>
+
+                {resumeList.length > 0 && (
+                  <div className="mt-6 text-left">
+                    <h4 className="font-semibold mb-2">Your Resumes:</h4>
+                    <ul className="space-y-2">
+                      {resumeList.map((id) => (
+                        <li
+                          key={id}
+                          className="flex items-center justify-between bg-gray-100 p-2 rounded"
+                        >
+                          <span>{id}</span>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handleViewResume(id)}
+                          >
+                            <Eye className="h-4 w-4 mr-1" /> View
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </motion.div>
             </TabsContent>
             
