@@ -1,7 +1,7 @@
 // src/lib/api/resumes.ts
 import axios from "axios";
 
-const BASE_URL =  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000/api";
+const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5001/api";
 
 /**
  * Get all resume IDs for a specific user
@@ -24,9 +24,22 @@ export const getResumeById = async (resumeId: string, email: string) => {
   if (!email) throw new Error("Email is required to fetch resume");
   const res = await axios.get(`${BASE_URL}/resumes/${resumeId}`, {
     params: { email },
-    responseType: "text", // Returns HTML
+    responseType: "blob",
   });
-  return res.data; // HTML content
+  return res.data; // Returns Blob
+};
+
+/**
+ * Get a specific resume's LaTeX content
+ * @param resumeId Resume ID
+ * @param email User's email address
+ */
+export const getResumeLatexById = async (resumeId: string, email: string) => {
+  if (!email) throw new Error("Email is required to fetch LaTeX");
+  const res = await axios.get(`${BASE_URL}/resumes/${resumeId}/latex`, {
+    params: { email },
+  });
+  return res.data; // Returns string content
 };
 
 /**

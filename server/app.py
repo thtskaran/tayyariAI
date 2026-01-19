@@ -1,21 +1,32 @@
-# app.py
 import os
 import uuid
 from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
-import openai
+from openai import OpenAI
 from flask_sqlalchemy import SQLAlchemy
+from flask_cors import CORS
+from dotenv import load_dotenv
+import fitz  # PyMuPDF for PDF text extraction
+
+# Load environment variables from .env.local file
+load_dotenv(".env.local")
 
 # --- Configuration ---
-# It's recommended to use environment variables for sensitive data like API keys.
-# You can create a .env file and use a library like python-dotenv to load them.
-# Example: OPENAI_API_KEY="your_real_api_key"
-openai.api_key = os.environ.get("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY") 
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+# Initialize OpenAI Client
+client = OpenAI(
+    api_key=OPENAI_API_KEY,
+    base_url=OPENAI_BASE_URL
+)
 UPLOAD_FOLDER = 'resumes_storage'
-ALLOWED_EXTENSIONS = {'html'}
+ALLOWED_EXTENSIONS = {'html','pdf', 'docx'}
 
 # --- App Initialization ---
 app = Flask(__name__)
+# Enable CORS for all routes and all origins to resolve preflight issues
+CORS(app, resources={r"/*": {"origins": "*"}})
 # Get the absolute path for the database file to avoid ambiguity.
 basedir = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'resumes.db')
@@ -63,12 +74,30 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def extract_text_from_pdf(filepath):
+    """Extracts plain text from a PDF file."""
+    try:
+        doc = fitz.open(filepath)
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        return text.strip()
+    except Exception as e:
+        print(f"Error extracting PDF: {e}")
+        return None
+
 # --- API Endpoints ---
 
 @app.route('/', methods=['GET'])
 def root():
     """Root endpoint that returns server status."""
     return jsonify({"message": "Server running"}), 200
+
+@app.before_request
+def log_request_info():
+    app.logger.debug('Headers: %s', request.headers)
+    app.logger.debug('Body: %s', request.get_data())
+    print(f"Incoming {request.method} request to {request.path}")
 
 @app.route('/api/user', methods=['POST'])
 def add_user():
@@ -100,7 +129,8 @@ def get_user_resumes():
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    resume_ids = [resume.id for resume in user.resumes]
+    # Filter out AI-generated resumes from the main list
+    resume_ids = [resume.id for resume in user.resumes if not resume.id.endswith('_ai')]
     return jsonify({"resume_ids": resume_ids}), 200
 
 @app.route('/api/resumes/<string:resume_id>', methods=['GET', 'PUT', 'DELETE'])
@@ -120,13 +150,18 @@ def manage_resume(resume_id):
         if not resume:
             return jsonify({"error": "Resume not found or access denied"}), 404
         
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], resume.filename)
-        if os.path.exists(filepath):
-            os.remove(filepath)
-            
+        # Also delete associated AI version if it exists
+        ai_resume_id = f"{resume_id}_ai"
+        ai_resume = Resume.query.filter_by(id=ai_resume_id, user_id=user.id).first()
+        if ai_resume:
+            ai_filepath = os.path.join(app.config['UPLOAD_FOLDER'], ai_resume.filename)
+            if os.path.exists(ai_filepath):
+                os.remove(ai_filepath)
+            db.session.delete(ai_resume)
+
         db.session.delete(resume)
         db.session.commit()
-        return jsonify({"message": f"Resume {resume_id} deleted successfully"}), 200
+        return jsonify({"message": f"Resume {resume_id} and its AI versions deleted successfully"}), 200
 
     # --- GET Method ---
     if request.method == 'GET':
@@ -170,6 +205,26 @@ def manage_resume(resume_id):
             "filename": filename
         }), 201
 
+@app.route('/api/resumes/<string:resume_id>/latex', methods=['GET'])
+def get_resume_latex(resume_id):
+    """Gets the LaTeX source for a specific resume."""
+    email = request.args.get('email')
+    if not email:
+        return jsonify({"error": "Email query parameter is required"}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    # The LaTeX file is named {resume_id}.tex
+    filename = f"{resume_id}.tex"
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({"error": "LaTeX source not found"}), 404
+        
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
 @app.route('/api/ai/generate', methods=['POST'])
 def ai_generate():
     """Interacts with a resume using AI, saving changes to the database."""
@@ -188,35 +243,141 @@ def ai_generate():
     resume_content = ""
     resume = None
     if resume_id:
-        resume = Resume.query.filter_by(id=resume_id, user_id=user.id).first()
-        if not resume:
+        # Check if we should use the AI version as context (useful for iterative edits)
+        ai_resume_id = resume_id if resume_id.endswith('_ai') else f"{resume_id}_ai"
+        target_resume = Resume.query.filter_by(id=ai_resume_id, user_id=user.id).first()
+        
+        # If no AI version, use the original
+        if not target_resume:
+            target_resume = Resume.query.filter_by(id=resume_id, user_id=user.id).first()
+        
+        if not target_resume:
             return jsonify({"error": "Resume not found or access denied"}), 404
         
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], resume.filename)
+        resume = target_resume # This will be the one we "edit" or use as base
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], target_resume.filename)
+        
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                resume_content = f.read()
-        except FileNotFoundError:
-            return jsonify({"error": "Resume file not found on server"}), 500
+            # Check if it's a PDF file
+            if target_resume.filename.lower().endswith('.pdf'):
+                extracted_text = extract_text_from_pdf(filepath)
+                if extracted_text:
+                    resume_content = f"[FORMAT: PDF TEXT EXTRACTION]\n\n{extracted_text}"
+                else:
+                    resume_content = "[Error: Could not extract text from this PDF file.]"
+            else:
+                # Try reading as HTML/Text
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        resume_content = f.read()
+                except (UnicodeDecodeError, FileNotFoundError):
+                    with open(filepath, 'r', encoding='latin-1') as f:
+                        resume_content = f.read()
+        except Exception as e:
+            app.logger.error(f"Error reading file: {e}")
+            resume_content = "[Error: Content could not be read.]"
+        
+        # If the content is still essentially binary but missed the extension check
+        if resume_content.startswith('%PDF') or len(resume_content) > 150000:
+             # If it's a PDF that wasn't extracted correctly
+             if resume_content.startswith('%PDF'):
+                 extracted = extract_text_from_pdf(filepath)
+                 resume_content = extracted if extracted else "[Binary PDF Error]"
+             else:
+                 resume_content = "[File too large for direct processing.]"
 
     try:
+        # Determine if we are sending HTML or extracted text
+        content_type = "HTML" if not resume_content.startswith("[FORMAT: PDF TEXT EXTRACTION]") else "extracted text from a PDF"
+        
         messages = [
-            {"role": "system", "content": "You are a helpful resume assistant. The user will provide their resume and ask for modifications. You should return ONLY the complete, updated HTML of the resume. Do not add any explanatory text or markdown formatting like ```html before or after the code."},
-            {"role": "user", "content": f"Here is my current resume HTML:\n\n{resume_content}\n\nPlease apply the following change: {prompt}"}
+            {
+                "role": "system", 
+                "content": (
+                    "You are a master Resume Architect and Design Specialist. "
+                    "Your primary goal is to take a resume (extracted PDF text or HTML) and REPLICATE its visual design, layout, and formatting patterns EXACTLY in both LaTeX and professional HTML."
+                    "\n\nOUTPUT REQUIREMENTS:"
+                    "\nYou MUST return the response in the following EXACT format with the specified delimiters:"
+                    "\n\n---LATEX_START---"
+                    "\n[Professional LaTeX code that REPLICATES the input's design pattern. Use geometry for margins, custom font packages if needed, and clean structural commands. Ensure it is a near-perfect visual clone.]"
+                    "\n---LATEX_END---"
+                    "\n\n---HTML_START---"
+                    "\n[An HTML/CSS version that is an EXACT visual replica of the original resume. Use absolute positioning or precise flexbox/grid to mimic the original layout. Include all CSS in a <style> block.]"
+                    "\n---HTML_END---"
+                    "\n\nRULES:"
+                    "\n1. Analyze the original design patterns: header style, section dividers, column layouts, and font weights."
+                    "\n2. Mimic those patterns precisely. If the original has a two-column layout, the output MUST have a two-column layout."
+                    "\n3. Apply the user's requested changes while maintaining the integrity of the design replica."
+                    "\n4. Do not include any other text, markdown, or conversation outside the markers."
+                )
+            },
+            {
+                "role": "user", 
+                "content": (
+                    f"ORIGINAL RESUME CONTENT:\n{resume_content}\n\n"
+                    f"USER REQUEST: {prompt}\n\n"
+                    "INSTRUCTION: Analyze the design pattern of the original content and create an EXACT DESIGN REPLICA in both LaTeX and HTML, incorporating the user's request."
+                )
+            }
         ]
 
-        response = openai.chat.completions.create(model="gpt-4o", messages=messages)
-        updated_html = response.choices[0].message.content.strip()
+        response = client.chat.completions.create(model="gpt-4o", messages=messages)
+        raw_response = response.choices[0].message.content.strip()
         
-        # Clean the response just in case the model adds markdown
-        if updated_html.startswith("```html"): updated_html = updated_html[7:]
-        if updated_html.endswith("```"): updated_html = updated_html[:-3]
-        updated_html = updated_html.strip()
+        # Parse the structured response
+        latex_code = ""
+        updated_html = ""
+        
+        if "---LATEX_START---" in raw_response and "---LATEX_END---" in raw_response:
+            latex_code = raw_response.split("---LATEX_START---")[1].split("---LATEX_END---")[0].strip()
+        
+        if "---HTML_START---" in raw_response and "---HTML_END---" in raw_response:
+            updated_html = raw_response.split("---HTML_START---")[1].split("---HTML_END---")[0].strip()
+        
+        # Fallback if parsing fails
+        if not updated_html:
+            updated_html = raw_response
+            if updated_html.startswith("```html"): updated_html = updated_html[7:]
+            if updated_html.endswith("```"): updated_html = updated_html[:-3]
+            updated_html = updated_html.strip()
 
-        if resume: # Update existing resume
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], resume.filename)
-            with open(filepath, 'w', encoding='utf-8') as f: f.write(updated_html)
-            return jsonify({"message": "Resume updated", "resume_id": resume.id, "updated_content": updated_html})
+        if resume: # Update or Create AI version
+            # Ensure we don't get IDs like "uuid_ai_ai"
+            base_id = resume.id
+            if base_id.endswith('_ai'):
+                base_id = base_id[:-3]
+            
+            ai_resume_id = f"{base_id}_ai"
+            ai_resume = Resume.query.filter_by(id=ai_resume_id, user_id=user.id).first()
+            
+            if ai_resume:
+                # Update existing AI version
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], ai_resume.filename)
+                with open(filepath, 'w', encoding='utf-8') as f: f.write(updated_html)
+                
+                # Also save LaTeX version
+                latex_filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{ai_resume_id}.tex")
+                with open(latex_filepath, 'w', encoding='utf-8') as f: f.write(latex_code)
+            else:
+                # Create new AI version
+                ai_filename = f"{ai_resume_id}_ai_generated.html"
+                ai_filepath = os.path.join(app.config['UPLOAD_FOLDER'], ai_filename)
+                with open(ai_filepath, 'w', encoding='utf-8') as f: f.write(updated_html)
+                
+                # Also save LaTeX version
+                latex_filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{ai_resume_id}.tex")
+                with open(latex_filepath, 'w', encoding='utf-8') as f: f.write(latex_code)
+                
+                ai_resume = Resume(id=ai_resume_id, filename=ai_filename, user_id=user.id)
+                db.session.add(ai_resume)
+                db.session.commit()
+            
+            return jsonify({
+                "message": "I've updated your resume. You can see the changes in the 'AI Redefined' tab and the LaTeX code below.", 
+                "resume_id": ai_resume_id, 
+                "updated_content": updated_html,
+                "latex_code": latex_code
+            })
         else: # Create a new resume
             new_resume_id = str(uuid.uuid4())
             new_filename = f"{new_resume_id}_ai_generated.html"
@@ -224,11 +385,20 @@ def ai_generate():
             
             with open(new_filepath, 'w', encoding='utf-8') as f: f.write(updated_html)
             
+            # Also save LaTeX version
+            latex_filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{new_resume_id}.tex")
+            with open(latex_filepath, 'w', encoding='utf-8') as f: f.write(latex_code)
+            
             new_resume = Resume(id=new_resume_id, filename=new_filename, user_id=user.id)
             db.session.add(new_resume)
             db.session.commit()
             
-            return jsonify({"message": "New resume generated", "resume_id": new_resume_id, "updated_content": updated_html}), 201
+            return jsonify({
+                "message": "New resume generated. You can see the LaTeX code below.", 
+                "resume_id": new_resume_id, 
+                "updated_content": updated_html,
+                "latex_code": latex_code
+            }), 201
 
     except Exception as e:
         app.logger.error(f"AI generation failed: {e}")

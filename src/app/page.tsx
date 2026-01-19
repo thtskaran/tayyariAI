@@ -1,6 +1,5 @@
 'use client';
 
-import { AuthProvider } from '@/contexts/AuthContext';
 import { Toaster } from '@/components/ui/sonner';
 import { Button } from '@/components/ui/button';
 import { ArrowRight, Sparkles, FileText, Download, MessageSquare, Zap, Shield, Users, Target, Star, Quote } from 'lucide-react';
@@ -388,7 +387,6 @@ function FAQ() {
 
 export default function Home() {
   return (
-    <AuthProvider>
       <div className="min-h-screen bg-white">
         <main>
           <Hero />
@@ -398,6 +396,5 @@ export default function Home() {
         </main>
         <Toaster />
       </div>
-    </AuthProvider>
   );
 }

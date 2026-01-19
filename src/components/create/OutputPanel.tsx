@@ -1,23 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   CardContent,
-  CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Download, Send, MessageSquare, X } from "lucide-react";
+import { Download, Send, MessageSquare, Sparkles, FileText } from "lucide-react";
 import { ResumeData } from "@/lib/types/types";
-import { motion } from "framer-motion";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "sonner";
+import { generateAIResume } from "@/lib/api/resumes";
 
 interface OutputPanelProps {
   data: ResumeData;
   onDataChange: (data: ResumeData) => void;
   loading: boolean;
+  aiGeneratedHtml: string | null;
+  setAiGeneratedHtml: (html: string | null) => void;
+  latexCode: string | null;
+  setLatexCode: (code: string | null) => void;
+  selectedResumeId?: string | null;
+  onAiUpdate?: () => void;
 }
 
 interface ChatMessage {
@@ -27,19 +32,67 @@ interface ChatMessage {
   timestamp: Date;
 }
 
-export default function OutputPanel({ data,onDataChange, loading }: OutputPanelProps) {
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+export default function OutputPanel({
+ aiGeneratedHtml, setAiGeneratedHtml,
+  latexCode, setLatexCode, selectedResumeId, onAiUpdate
+}: OutputPanelProps) {
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: 'welcome',
+      type: 'ai',
+      content: "Hi! I'm your AI Resume Assistant. How can I help you refine your resume today?",
+      timestamp: new Date()
+    }
+  ]);
   const [inputMessage, setInputMessage] = useState("");
   const [processing, setProcessing] = useState(false);
-  const [showChat, setShowChat] = useState(false);
+  const [activeResumeId, setActiveResumeId] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'chat' | 'latex'>('chat');
+
+  // Auto-switch to latex mode when new latex code arrives
+  useEffect(() => {
+    if (latexCode) {
+      setViewMode('latex');
+    }
+  }, [latexCode]);
+
+  // Clean up blob URL
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  // Update preview URL when HTML changes
+  useEffect(() => {
+    if (aiGeneratedHtml) {
+      const blob = new Blob([aiGeneratedHtml], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(url);
+    }
+  }, [aiGeneratedHtml]);
 
   const handleSendMessage = async () => {
-    if (!inputMessage.trim()) return;
-    setShowChat(true);
+    if (!inputMessage.trim() || processing) return;
+
+    const email = localStorage.getItem("email");
+    if (!email) {
+      toast.error("Please sign in to use the AI assistant.");
+      return;
+    }
+
+    if (!selectedResumeId && !activeResumeId) {
+      toast.warning("Please upload a resume first to use the AI assistant.");
+      return;
+    }
+
+    const userMsgText = inputMessage;
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       type: "user",
-      content: inputMessage,
+      content: userMsgText,
       timestamp: new Date(),
     };
 
@@ -47,246 +100,164 @@ export default function OutputPanel({ data,onDataChange, loading }: OutputPanelP
     setInputMessage("");
     setProcessing(true);
 
-    // Simulate AI processing
-    setTimeout(() => {
+    try {
+      const payload = {
+        email: email,
+        prompt: userMsgText,
+        resume_id: selectedResumeId || activeResumeId
+      };
+
+      const response = await generateAIResume(payload);
+
+      if (response.latex_code) {
+        setLatexCode(response.latex_code);
+      }
+
       const aiResponse: ChatMessage = {
         id: (Date.now() + 1).toString(),
         type: "ai",
-        content: getAIResponse(inputMessage),
+        content: response.message || "I've updated your resume.",
         timestamp: new Date(),
       };
 
       setChatMessages((prev) => [...prev, aiResponse]);
+
+      if (response.resume_id) {
+        setActiveResumeId(response.resume_id);
+      }
+
+      if (response.updated_content) {
+        setAiGeneratedHtml(response.updated_content);
+        if (onAiUpdate) onAiUpdate();
+      }
+
+      toast.success("AI updated your resume!");
+
+    } catch (error: any) {
+      console.error("AI Error:", error);
+      const errorMsg: ChatMessage = {
+        id: (Date.now() + 2).toString(),
+        type: "ai",
+        content: "Sorry, I encountered an error. Please try again.",
+        timestamp: new Date(),
+      };
+      setChatMessages((prev) => [...prev, errorMsg]);
+      toast.error("Failed to process AI request.");
+    } finally {
       setProcessing(false);
-    }, 1500);
-  };
-
-  const getAIResponse = (message: string): string => {
-    const lowerMessage = message.toLowerCase();
-
-    if (lowerMessage.includes("concise") || lowerMessage.includes("shorter")) {
-      return "I've made your resume more concise by removing redundant phrases and tightening the language while maintaining impact.";
-    } else if (
-      lowerMessage.includes("highlight") ||
-      lowerMessage.includes("emphasize")
-    ) {
-      return "I've restructured your resume to better highlight your key achievements and skills, making them more prominent to recruiters.";
-    } else if (
-      lowerMessage.includes("technical") ||
-      lowerMessage.includes("skills")
-    ) {
-      return "I've reorganized your technical skills section and added relevant keywords to improve ATS compatibility.";
-    } else if (
-      lowerMessage.includes("experience") ||
-      lowerMessage.includes("work")
-    ) {
-      return "I've enhanced your work experience descriptions with stronger action verbs and quantifiable achievements.";
-    } else {
-      return "I've updated your resume based on your request. The changes should improve readability and impact while maintaining professional standards.";
     }
   };
 
   const handleDownload = () => {
-    console.log("Downloading resume...");
+    toast.info("Preparing download...");
   };
 
   return (
-    <div className="w-full  h-full flex flex-col bg-white">
-      {/* Header */}
-      <CardHeader className="flex-shrink-0 px-6 py-4 border-b border-gray-200">
-        <CardTitle className="flex items-center justify-between w-full">
-          <span>Resume Preview</span>
-          <Button onClick={handleDownload} variant="outline" size="sm">
-            <Download className="h-4 w-4 mr-1" />
+    <div className="w-full h-full flex flex-col bg-white">
+      {/* Header with View Toggle */}
+      <CardHeader className="flex-shrink-0 px-6 py-4 border-b border-gray-100 bg-gray-50/30">
+        <div className="flex items-center justify-between w-full">
+          <div className="flex bg-gray-100 p-1 rounded-xl">
+            <button
+              onClick={() => setViewMode('chat')}
+              className={`flex items-center gap-2 px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${viewMode === 'chat' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              AI Chat
+            </button>
+            <button
+              disabled={!latexCode}
+              onClick={() => setViewMode('latex')}
+              className={`flex items-center gap-2 px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${viewMode === 'latex' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                } ${!latexCode ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              LaTeX Code
+            </button>
+          </div>
+          <Button onClick={handleDownload} variant="outline" size="sm" className="h-9 rounded-xl px-4">
+            <Download className="h-4 w-4 mr-2" />
             Download PDF
           </Button>
-        </CardTitle>
-        <CardDescription className="text-gray-500">
-          Live preview of your AI-generated resume
-        </CardDescription>
+        </div>
       </CardHeader>
 
-      {/* Resume Preview */}
-      <CardContent className="flex-1 flex flex-col p-6 bg-gray-50 overflow-y-auto">
-        {loading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      {/* Main Content Area */}
+      <CardContent className="flex-1 flex flex-col p-0 bg-white overflow-hidden">
+        {viewMode === 'latex' && latexCode ? (
+          <div className="h-full flex flex-col bg-gray-900 overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-3 bg-gray-800 border-b border-gray-700">
+              <span className="text-xs font-bold text-gray-400 font-mono">latex_source.tex</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(latexCode);
+                  toast.success("LaTeX copied!");
+                }}
+                className="h-7 text-[10px] text-gray-300 hover:text-white"
+              >
+                Copy All
+              </Button>
+            </div>
+            <ScrollArea className="flex-1">
+              <div className="p-6 font-mono text-[13px] leading-relaxed text-gray-300 whitespace-pre">
+                <code>{latexCode}</code>
+              </div>
+            </ScrollArea>
           </div>
         ) : (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.4 }}
-            className="bg-white rounded-lg shadow p-6 space-y-6"
-          >
-            {/* Header */}
-            <div className="text-center border-b pb-3">
-              <h1 className="text-2xl font-bold text-gray-900">
-                {data.personalInfo.fullName || "Your Name"}
-              </h1>
-              <p className="text-gray-600 text-sm mt-1">
-                {data.personalInfo.email} • {data.personalInfo.phone} •{" "}
-                {data.personalInfo.location}
-              </p>
+          <div className="h-full flex flex-col bg-gray-50/30 overflow-hidden">
+            <ScrollArea className="flex-1 p-6">
+              <div className="space-y-6 max-w-2xl mx-auto">
+                {chatMessages.map((message) => (
+                  <div key={message.id} className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}>
+                    <div className={`p-4 rounded-2xl text-[13px] leading-relaxed shadow-sm max-w-[85%] ${message.type === "user" ? "bg-blue-600 text-white" : "bg-white text-gray-800 border border-gray-100"
+                      }`}>
+                      {message.content}
+                    </div>
+                  </div>
+                ))}
+                {processing && (
+                  <div className="flex justify-start">
+                    <div className="bg-white px-4 py-2 rounded-xl text-xs text-gray-400 border border-gray-100 animate-pulse">
+                      AI is thinking...
+                    </div>
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+
+            {/* Input Area (Only in Chat Mode) */}
+            <div className="p-4 bg-white border-t border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="relative flex-1">
+                  <Input
+                    value={inputMessage}
+                    onChange={(e) => setInputMessage(e.target.value)}
+                    placeholder="Ask me to change something..."
+                    onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                    disabled={processing}
+                    className="pr-10 py-5 rounded-xl border-gray-200"
+                  />
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <Sparkles className="h-4 w-4 text-blue-300" />
+                  </div>
+                </div>
+                <Button
+                  onClick={handleSendMessage}
+                  disabled={!inputMessage.trim() || processing}
+                  size="icon"
+                  className="h-10 w-10 rounded-xl bg-blue-600 hover:bg-blue-700"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
-
-            {/* Summary */}
-            {data.personalInfo.summary && (
-              <section>
-                <h2 className="text-base font-semibold text-gray-900 mb-2">
-                  Professional Summary
-                </h2>
-                <p className="text-gray-700 text-sm">
-                  {data.personalInfo.summary}
-                </p>
-              </section>
-            )}
-
-            {/* Experience */}
-            {data.experience.length > 0 && (
-              <section>
-                <h2 className="text-base font-semibold text-gray-900 mb-2">
-                  Experience
-                </h2>
-                <div className="space-y-4">
-                  {data.experience.map((exp) => (
-                    <div key={exp.id}>
-                      <div className="flex justify-between">
-                        <div>
-                          <h3 className="font-medium text-gray-900 text-sm">
-                            {exp.title}
-                          </h3>
-                          <p className="text-gray-600 text-sm">{exp.company}</p>
-                        </div>
-                        <p className="text-sm text-gray-500">
-                          {exp.startDate} -{" "}
-                          {exp.current ? "Present" : exp.endDate}
-                        </p>
-                      </div>
-                      <ul className="list-disc list-inside text-gray-700 space-y-1 text-sm mt-1">
-                        {exp.description.map((desc, idx) => (
-                          <li key={idx}>{desc}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* Education */}
-            {data.education.length > 0 && (
-              <section>
-                <h2 className="text-base font-semibold text-gray-900 mb-2">
-                  Education
-                </h2>
-                <div className="space-y-2">
-                  {data.education.map((edu) => (
-                    <div
-                      key={edu.id}
-                      className="flex justify-between text-sm text-gray-700"
-                    >
-                      <div>
-                        <p className="font-medium">{edu.degree}</p>
-                        <p>{edu.institution}</p>
-                      </div>
-                      <p className="text-gray-500">
-                        {edu.startDate} - {edu.endDate}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* Skills */}
-            {data.skills.length > 0 && (
-              <section>
-                <h2 className="text-base font-semibold text-gray-900 mb-2">
-                  Skills
-                </h2>
-                <div className="grid grid-cols-2 gap-4 text-sm text-gray-700">
-                  {data.skills.map((skill) => (
-                    <div key={skill.id} className="flex justify-between">
-                      <span>{skill.name}</span>
-                      <span className="text-gray-500">{skill.level}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-          </motion.div>
+          </div>
         )}
       </CardContent>
-
-      {/* Chat Interface */}
-      <div className="flex-shrink-0 border-t border-gray-200 px-4 py-2 bg-white">
-        {showChat && (
-        <div className="flex items-center justify-between mb-1 text-gray-700">
-          <div className="flex items-center">
-            <MessageSquare className="h-5 w-5 text-blue-600 mr-2" />
-            <h3 className="font-semibold">AI Chat</h3>
-          </div>
-          <button
-            onClick={() => setShowChat(false)} 
-            aria-label="Close chat"
-            className="p-1 text-gray-500 hover:text-gray-700"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        )}
-
-        {showChat && (
-          <ScrollArea className="h-28 mb-3 p-2 bg-gray-50 border rounded-lg overflow-y-auto">
-            <div className="space-y-2">
-              {chatMessages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${
-                    message.type === "user" ? "justify-end" : "justify-start"
-                  }`}
-                >
-                  <div
-                    className={`max-w-[80%] p-2 rounded-lg text-sm ${
-                      message.type === "user"
-                        ? "bg-blue-600 text-white"
-                        : "bg-white text-gray-900 shadow-sm"
-                    }`}
-                  >
-                    {message.content}
-                  </div>
-                </div>
-              ))}
-
-              {processing && (
-                <div className="flex justify-start">
-                  <div className="bg-white p-2 rounded-lg text-sm text-gray-500 shadow-sm">
-                    AI is typing...
-                  </div>
-                </div>
-              )}
-            </div>
-          </ScrollArea>
-        )}
-
-        <div className="flex space-x-2">
-          <Input
-            value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
-            placeholder="Ask AI to improve your resume..."
-            onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-            disabled={processing}
-          />
-          <Button
-            onClick={handleSendMessage}
-            disabled={!inputMessage.trim() || processing}
-            size="sm"
-          >
-            <Send className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
     </div>
   );
 }
